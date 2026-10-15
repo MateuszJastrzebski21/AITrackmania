@@ -1,4 +1,4 @@
-# Trackmania training and release workflow for 1.2.11
+# Trackmania training and release workflow for 1.2.12
 
 The default configuration below trains IQN from lidar and telemetry. The generated
 `run-ppo.yaml` trains PPO from telemetry, and `run-ppo-vision.yaml` trains PPO from
@@ -12,7 +12,7 @@ Install the released CLI, then create the game project only on a machine that
 has Trackmania, Openplanet and a virtual gamepad driver:
 
 ```powershell
-uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==1.2.11"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==1.2.12"
 trackmaniarl init my-agent --template trackmania
 cd my-agent
 uv sync
@@ -70,6 +70,11 @@ process and virtual controller run natively. WSL is not a supported game host.
    uv run trackmaniarl track check --config run.yaml
    ```
 
+Editor-validation resets on Linux require a local X11 session and `xdotool`,
+with Trackmania already focused. This reset path rejects Wayland, SSH and
+headless sessions and does not activate background windows. Software tests do
+not replace checking reset and controller readiness in the game before training.
+
 Install **TrackmaniaRL Connect** from Openplanet's in-game Plugin Manager just as
 on Windows. The native Python process and the Proton game share localhost, so no
 port forwarding is required. If Openplanet stops loading after a Trackmania
@@ -110,6 +115,28 @@ dead zone and cannot provide rumble collision signals. The choice belongs to
 the environment, not the model, so the same policy can drive either backend.
 expect different driving dynamics after analog-to-digital conversion.
 
+### Check the gamepad's steering curve
+
+Trackmania bends the virtual stick through its own **Analog Sensitivity** and
+**Analog Dead Zone** (Settings > Controls, per car) before the car steers. At a
+low sensitivity the smaller steering levels all drive straight: on one measured
+install at sensitivity 0.1 and dead zone 0.05, 7 of the 13 default levels steered
+identically, so the policy could not tell them apart. With the car sitting on a
+loaded map and no gas, measure it:
+
+```powershell
+uv run trackmaniarl track check-steering --output assets/steering-curve.json
+```
+
+The command reports how many steering levels steer differently. Either set the
+sensitivity to 1.0 and the dead zone to its minimum and measure again, or keep the
+measured curve and point the environment at it. The gamepad backend then sends
+the stick position that produces each requested steer:
+
+```yaml
+        steering_curve_path: assets/steering-curve.json
+```
+
 Before starting separate `learner` or `actor` commands, generate one random
 distributed token and store the same value as
 `TRACKMANIARL_DISTRIBUTED_TOKEN` in each project's ignored `.env` file:
@@ -137,6 +164,32 @@ uv run trackmaniarl track record-boundary right assets/my-map-right.npy
 uv run trackmaniarl track build-geometry assets/my-map.geometry.npz --left assets/my-map-left.npy --right assets/my-map-right.npy --map-uid YOUR_MAP_UID --map-path maps/my-map.Map.Gbx
 ```
 
+### Build a map from a ghost instead
+
+A replay or ghost of one finished lap can replace both hand-driven boundaries.
+Convert it to JSON with a [GBX.NET](https://github.com/BigBang1112/gbx-net)
+based exporter, in this shape: a `map_uid`, `checkpoints` with `time_ms` (the last
+one is the finish), `samples` every 50 ms with `time_ms`, `position`, `velocity`,
+`rotation` (`[x, y, z, w]`), `speed` and optional `extras` holding `steer`, `gas`,
+`brake` and `wheel_slip`, and, to use the lap as a demonstration, `inputs`: every
+input change with `time_ms`, `steer`, `throttle` and `brake`. Map UIDs used for
+asset filenames may contain ASCII letters, digits, underscores and hyphens;
+reserved Windows filenames and paths escaping the output directory are rejected
+before any files are written. Then run:
+
+```powershell
+uv run trackmaniarl track from-ghost record.json --map-path maps/my-map.Map.Gbx
+```
+
+The lap's line becomes the reward centre line inside a corridor of virtual walls
+(`--half-width`, default 8 m either side; the inner wall narrows on turns tighter
+than that), and its timing becomes a pace reference. The command prints the
+`run.yaml` values to set, including `time_attack_target_s` at the lap's time.
+With a record ghost the lidar then measures distance from the record line and
+the pace features measure time lost against the record at every point. The
+corridor is not the real track: the agent cannot find a route outside it, so
+widen it when the record line is not the one you want to beat.
+
 Replace `YOUR_MAP_UID` with the UID reported by `track check` and
 set that same UID in `environment.kwargs.config.expected_map_uid`,
 `feature_pipeline.kwargs.config.expected_map_uid` and
@@ -156,6 +209,14 @@ episode, then confirms a ready local player after controller reset. A timeout,
 disconnect, UID mismatch or readiness rejection terminates the actor with a
 failing process status. The protocol does not expose the plugin package's
 signature or version. Verify those properties in Plugin Manager.
+
+Comparison launchers use a separate bounded preflight that verifies the map and
+player before issuing one reset, then polls for an active unfinished race near
+the start. It honors stop files during socket reads, records the last clock,
+finish flag and failure phase, and closes its temporary controller and telemetry
+connection. It does not press a finish-confirmation button blindly. Keyboard
+restart/confirmation also verifies that Trackmania is the foreground window;
+failed activation raises before any key is sent.
 
 The reference baseline is a 78-action dueling IQN (`13` steering levels × `2`
 gas levels × no brake, full brake, or timed brake tap), not TQC. With default

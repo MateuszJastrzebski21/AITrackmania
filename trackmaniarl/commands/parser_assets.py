@@ -4,7 +4,9 @@ import argparse
 from pathlib import Path
 
 from trackmaniarl.commands.assets import (
+    _build_from_ghost,
     _build_geometry,
+    _check_steering,
     _check_track_connection,
     _record_boundary,
     _record_demo,
@@ -12,6 +14,7 @@ from trackmaniarl.commands.assets import (
 )
 from trackmaniarl.commands.human_recovery import _record_human_recovery
 from trackmaniarl.commands.parser_types import CommandParsers
+from trackmaniarl.commands.reward_points import record_reward_points
 
 
 def register_asset_commands(commands: CommandParsers) -> None:
@@ -23,6 +26,24 @@ def register_asset_commands(commands: CommandParsers) -> None:
     _register_boundary_recorder(track_commands)
     _register_geometry_builder(track_commands)
     _register_track_check(track_commands)
+    _register_reward_points(track_commands)
+    _register_steering_check(track_commands)
+    _register_ghost_import(track_commands)
+
+
+def _register_reward_points(commands: CommandParsers) -> None:
+    parser = commands.add_parser(
+        "record-reward-points", help="record a complete reward path without lidar boundaries"
+    )
+    parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--map-path", type=Path, help="optional local map file; otherwise bind to live map UID"
+    )
+    parser.add_argument("--max-duration", type=float, default=600.0)
+    parser.add_argument("--spacing", type=float, default=2.0)
+    parser.add_argument("--session-port", type=int, default=9001)
+    _add_telemetry_connection(parser)
+    parser.set_defaults(handler=record_reward_points)
 
 
 def _add_telemetry_connection(parser: argparse.ArgumentParser) -> None:
@@ -200,3 +221,34 @@ def _register_track_check(commands: CommandParsers) -> None:
         help="also require the active map UID to match a first-party run.yaml",
     )
     parser.set_defaults(handler=_check_track_connection)
+
+
+def _register_steering_check(commands: CommandParsers) -> None:
+    parser = commands.add_parser(
+        "check-steering",
+        help="measure how the game's analog settings bend the virtual stick's steering",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="save the curve here; set it as steering_curve_path in run.yaml",
+    )
+    parser.add_argument("--points", type=int, default=41)
+    _add_telemetry_connection(parser)
+    parser.set_defaults(handler=_check_steering)
+
+
+def _register_ghost_import(commands: CommandParsers) -> None:
+    parser = commands.add_parser(
+        "from-ghost",
+        help="build geometry and a pace reference from a ghost's JSON export",
+    )
+    parser.add_argument("ghost", type=Path, help="JSON export of a .Replay.Gbx or .Ghost.Gbx")
+    parser.add_argument("--map-path", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, default=Path("assets"))
+    parser.add_argument(
+        "--half-width", type=float, default=8.0, help="metres of corridor either side of the line"
+    )
+    parser.add_argument("--spacing", type=float, default=2.0)
+    parser.add_argument("--map-uid", help="required for a .Ghost.Gbx export, which has no UID")
+    parser.set_defaults(handler=_build_from_ghost)

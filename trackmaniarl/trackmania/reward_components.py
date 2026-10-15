@@ -48,6 +48,15 @@ def nearest_point(reward: TrajectoryReward, point: np.ndarray) -> tuple[int, flo
     return nearest, float(distances[nearest - window_start])
 
 
+CORNER_SLACK = 2.0
+"""How much further the reference line may advance than the car moved in one step.
+
+A racing line cuts corners, so over a lap the car drives less distance than the
+centre line measures. Bounding each step, rather than total progress by total
+distance driven, still rejects a snap to a far-off part of the track while letting
+a corner-cutting lap reach the finish."""
+
+
 def bounded_advance(reward: TrajectoryReward, request: AdvanceRequest) -> int:
     previous = reward._previous_position
     reward._previous_position = request.point
@@ -55,14 +64,19 @@ def bounded_advance(reward: TrajectoryReward, request: AdvanceRequest) -> int:
         return reward._index
     displacement_m = float(np.linalg.norm(request.point - previous))
     accepted_motion_m = min(displacement_m, reward.max_projected_speed_mps * request.time_budget_s)
-    reward._reachable_progress_m += accepted_motion_m
-    reachable = (
-        int(
-            np.searchsorted(reward._cumulative_distance, reward._reachable_progress_m, side="right")
-        )
-        - 1
+    distance = reward._cumulative_distance
+    available_m = reward._progress_motion_remainder_m + CORNER_SLACK * accepted_motion_m
+    limit_m = distance[reward._index] + available_m
+    reachable = int(np.searchsorted(reward._cumulative_distance, limit_m, side="right")) - 1
+    accepted = max(reward._index, min(request.nearest, reachable))
+    consumed_m = distance[accepted] - distance[reward._index]
+    next_index = min(accepted + 1, len(distance) - 1)
+    # Keep sub-point motion, but never bank more than one reference segment.
+    # Circling in place must not build credit for a jump to a distant track section.
+    reward._progress_motion_remainder_m = min(
+        max(0.0, available_m - consumed_m), distance[next_index] - distance[accepted]
     )
-    return min(request.nearest, max(reachable, reward._index))
+    return accepted
 
 
 def potential(reward: TrajectoryReward) -> float:

@@ -27,7 +27,7 @@ class PaceDemonstrationRequest:
     path: str | Path
     geometry: GeometryAsset
     trajectory: np.ndarray
-    velocity_to_mps_scale: float = 0.001
+    velocity_to_mps_scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +35,7 @@ class PaceFrameRequest:
     frames: np.ndarray
     trajectory: np.ndarray
     finish_time_s: float
-    velocity_to_mps_scale: float = 0.001
+    velocity_to_mps_scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +241,7 @@ def _monotonic_projection(
         elapsed_s = (
             0.0 if frame_index == 0 else race_times_s[frame_index] - race_times_s[frame_index - 1]
         )
-        max_distance = cumulative_distance[previous] + 100.0 * max(0.0, elapsed_s) + 2.0
+        max_distance = cumulative_distance[previous] + 278.0 * max(0.0, elapsed_s) + 2.0
         stop = min(
             len(trajectory),
             int(np.searchsorted(cumulative_distance, max_distance, side="right")),

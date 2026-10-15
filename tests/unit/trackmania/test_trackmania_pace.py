@@ -8,6 +8,7 @@ import pytest
 from trackmaniarl.trackmania.pace import (
     PaceFrameRequest,
     ReferencePaceProfile,
+    _monotonic_projection,
     demonstration_guidance_line,
 )
 from trackmaniarl.trackmania.reward import TrajectoryReward
@@ -50,7 +51,7 @@ def test_reference_pace_interpolates_monotonic_demo_progress() -> None:
     frames[:, 3] = [0.0, 1_000.0, 2_000.0]
     frames[:, 4] = [0.0, 1.0, 2.0]
     frames[-1, 2] = 1.0
-    frames[:, 16] = [10_000.0, 20_000.0, 30_000.0]
+    frames[:, 16] = [10.0, 20.0, 30.0]
 
     profile = ReferencePaceProfile.from_frames(PaceFrameRequest(frames, trajectory, 2.0))
 
@@ -109,3 +110,10 @@ def test_finished_pace_uses_the_complete_reference_time() -> None:
     assert result.reference_time_s == 2.0
     assert result.time_debt_s == 0.5
     assert result.pace_reward == 0.0
+
+
+def test_pace_projection_tracks_fast_laps_without_accepting_teleports() -> None:
+    trajectory = np.column_stack([np.arange(1000), np.zeros((1000, 2))])
+    positions = trajectory[[0, 270, 900]]
+    indices = _monotonic_projection(positions, trajectory, np.array([0.0, 1.0, 2.0]))
+    assert indices.tolist() == [0, 270, 550]  # 278 m/s plus 2 m projection slack.
