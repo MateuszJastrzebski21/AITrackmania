@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -28,6 +29,44 @@ def soft_q_log_probabilities(q_values: torch.Tensor, alpha: torch.Tensor) -> tor
     values = values.double()
     advantages = values - values.max(1, keepdim=True).values
     return (advantages / temperature.double()).log_softmax(dim=1)
+
+
+def entropy_matched_log_probabilities(
+    q_values: torch.Tensor, target_entropy: float, iterations: int = 40
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Soft-Q targets whose per-state temperature gives exactly ``target_entropy``.
+
+    A scalar alpha is measured in reward units: action gaps far below it leave the
+    target near uniform, gaps far above it make the target nearly greedy. Solving
+    each row's temperature makes the target invariant to ``Q -> c * Q + b`` for
+    ``c > 0``. Returns float64 log probabilities and the ``[batch, 1]`` temperatures.
+    """
+    if q_values.ndim != 2 or not all(q_values.shape):
+        raise ValueError("entropy-matched soft-Q requires nonempty [batch, actions] values")
+    actions = q_values.shape[1]
+    if not 0.0 < target_entropy < math.log(actions):
+        raise ValueError("entropy-matched target_entropy must lie in (0, log(action_count))")
+    values = q_values.detach().double()
+    if not bool(torch.isfinite(values).all()):
+        raise ValueError("entropy-matched soft-Q requires finite values")
+    advantages = values - values.max(1, keepdim=True).values
+    spread = -advantages.min(1, keepdim=True).values
+    flat = spread <= 0
+    scale = torch.where(flat, torch.ones_like(spread), spread)
+    # Entropy grows monotonically with temperature: bisect log(alpha / spread)
+    # between a nearly greedy and a nearly uniform target, independently per row.
+    low = torch.full_like(spread, -12.0)
+    high = torch.full_like(spread, 12.0)
+    for _ in range(iterations):
+        middle = 0.5 * (low + high)
+        logs = (advantages / (scale * middle.exp())).log_softmax(dim=1)
+        too_sharp = -(logs.exp() * logs).sum(1, keepdim=True) < target_entropy
+        low = torch.where(too_sharp, middle, low)
+        high = torch.where(too_sharp, high, middle)
+    alpha = scale * (0.5 * (low + high)).exp()
+    logs = (advantages / alpha).log_softmax(dim=1)
+    uniform = torch.full_like(logs, -math.log(actions))
+    return torch.where(flat, uniform, logs), alpha
 
 
 def terminal_value_loss(  # noqa: PLR0913 -- Explicit target, terminal mask and importance weights.
