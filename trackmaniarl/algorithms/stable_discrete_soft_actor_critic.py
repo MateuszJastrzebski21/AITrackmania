@@ -28,9 +28,11 @@ from trackmaniarl.algorithms.sac_support import (
     restore_entropy_state,
 )
 from trackmaniarl.algorithms.sd_sac_objectives import (
+    EntropyMatchedTarget,
     actor_diagnostics,
     categorical_statistics,
-    entropy_matched_log_probabilities,
+    entropy_matched_diagnostics,
+    entropy_matched_target,
     soft_q_log_probabilities,
     terminal_value_loss,
 )
@@ -467,11 +469,10 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             q1 = _action_values(self.model.q1(batch.observations), shape, "q1").float()
             q2 = _action_values(self.model.q2(batch.observations), shape, "q2").float()
             q_values = 0.5 * q1 + 0.5 * q2
-            matched_alpha: torch.Tensor | None = None
+            matched: EntropyMatchedTarget | None = None
             if self.actor_temperature == "entropy_matched":
-                target_log_probabilities, matched_alpha = entropy_matched_log_probabilities(
-                    q_values, self._desired_entropy(shape[1])
-                )
+                matched = entropy_matched_target(q_values, self._desired_entropy(shape[1]))
+                target_log_probabilities = matched.log_probabilities
             else:
                 target_log_probabilities = soft_q_log_probabilities(q_values, alpha)
         if self.actor_objective == "soft_q_forward_kl":
@@ -484,8 +485,8 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
         diagnostics = actor_diagnostics(
             (probabilities.detach(), log_probabilities.detach()), (q1, q2), target_log_probabilities
         )
-        if matched_alpha is not None:
-            diagnostics["policy/matched_alpha_mean"] = matched_alpha.mean().float()
+        if matched is not None:
+            diagnostics.update(entropy_matched_diagnostics(matched))
         desired = self._desired_entropy(probabilities.shape[-1])
         diagnostics["policy/entropy_target"] = entropy.new_tensor(desired)
         diagnostics["policy/entropy_target_error"] = entropy.detach().mean() - desired
@@ -526,6 +527,10 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             return 0.98 * maximum
         if self.target_entropy > maximum:
             raise ValueError("SD-SAC target_entropy cannot exceed log(action_count)")
+        if self.actor_temperature == "entropy_matched" and self.target_entropy >= maximum:
+            # Critic targets ask for this before any optimizer step, so an
+            # unreachable matched target fails before weights change.
+            raise ValueError("entropy_matched target_entropy must be below log(action_count)")
         return self.target_entropy
 
     def _entropy_loss(self, actor: _DiscreteActorStep) -> torch.Tensor:

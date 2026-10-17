@@ -1,6 +1,7 @@
 """Entropy-matched actor targets are scale-free and fail closed on invalid setups."""
 
 import math
+from copy import deepcopy
 from dataclasses import replace
 
 import pytest
@@ -10,7 +11,7 @@ from torch import nn
 from tests.unit.learning._algorithm_fixtures import BatchKind, DiscreteSacModel, _batch
 from trackmaniarl.algorithms import StableDiscreteSoftActorCritic
 from trackmaniarl.algorithms.sac_support import discrete_batch
-from trackmaniarl.algorithms.sd_sac_objectives import entropy_matched_log_probabilities
+from trackmaniarl.algorithms.sd_sac_objectives import entropy_matched_target
 from trackmaniarl.models.actors import CategoricalActor
 
 MATCHED: dict[str, object] = {
@@ -54,42 +55,72 @@ def _entropy(logs: torch.Tensor) -> torch.Tensor:
 def test_target_has_requested_entropy_at_any_value_scale(scale: float) -> None:
     generator = torch.Generator().manual_seed(17)
     values = torch.randn(64, 78, generator=generator, dtype=torch.float64) * scale
-    logs, alpha = entropy_matched_log_probabilities(values, 0.8)
-    assert bool(torch.isfinite(logs).all() & torch.isfinite(alpha).all() & (alpha > 0).all())
-    torch.testing.assert_close(_entropy(logs), torch.full((64,), 0.8, dtype=torch.float64))
+    target = entropy_matched_target(values, 0.8)
+    temperature = target.temperature
+    assert bool(torch.isfinite(temperature).all() & (temperature > 0).all())
+    assert bool(torch.isfinite(target.log_probabilities).all())
+    assert not bool(target.unreachable.any())
+    assert float(target.entropy_error) < 1e-8
+    torch.testing.assert_close(
+        _entropy(target.log_probabilities), torch.full((64,), 0.8, dtype=torch.float64)
+    )
+
+
+def test_random_gap_structures_reach_the_requested_entropy() -> None:
+    generator = torch.Generator().manual_seed(43)
+    exponents = torch.empty(256, 78, dtype=torch.float64).uniform_(-12, 3, generator=generator)
+    values = -(10.0**exponents)
+    values[:, 0] = 0.0
+    target = entropy_matched_target(values, 0.8)
+    assert not bool(target.unreachable.any())
+    assert float(target.entropy_error) < 1e-8
+    assert float((_entropy(target.log_probabilities) - 0.8).abs().max()) < 1e-8
 
 
 @pytest.mark.parametrize(("scale", "shift"), [(1e-3, -5.0), (7.0, 100.0), (1e3, 0.0)])
 def test_target_is_invariant_to_positive_affine_value_changes(scale: float, shift: float) -> None:
     generator = torch.Generator().manual_seed(29)
     values = torch.randn(32, 78, generator=generator, dtype=torch.float64)
-    reference, _ = entropy_matched_log_probabilities(values, 0.8)
-    changed, _ = entropy_matched_log_probabilities(values * scale + shift, 0.8)
+    reference = entropy_matched_target(values, 0.8).log_probabilities
+    changed = entropy_matched_target(values * scale + shift, 0.8).log_probabilities
     torch.testing.assert_close(changed.exp(), reference.exp(), rtol=0, atol=1e-9)
 
 
-def test_flat_rows_are_uniform_and_tied_maxima_share_the_mass() -> None:
-    flat, _ = entropy_matched_log_probabilities(torch.full((2, 78), 3.25), 0.8)
-    torch.testing.assert_close(flat.exp(), torch.full((2, 78), 1 / 78, dtype=torch.float64))
+def test_flat_rows_and_tied_maxima_above_the_target_are_reported() -> None:
+    flat = entropy_matched_target(torch.full((2, 78), 3.25), 0.8)
+    torch.testing.assert_close(
+        flat.log_probabilities.exp(), torch.full((2, 78), 1 / 78, dtype=torch.float64)
+    )
+    assert bool(flat.unreachable.all())
     tied = torch.full((1, 78), -1.0)
     tied[0, :3] = 0.0
-    logs, _ = entropy_matched_log_probabilities(tied, 0.8)
-    # Three equal maxima cannot carry less than log(3) nats, whatever the target.
-    assert float(_entropy(logs)[0]) == pytest.approx(math.log(3), abs=1e-6)
-    assert bool(torch.isfinite(logs).all())
+    target = entropy_matched_target(tied, 0.8)
+    # Three equal maxima keep log(3) nats however small the temperature gets.
+    assert bool(target.unreachable.all())
+    assert float(_entropy(target.log_probabilities)[0]) == pytest.approx(math.log(3), abs=1e-9)
+    assert bool(torch.isfinite(target.log_probabilities).all())
+    assert float(target.entropy_error) == 0
+
+
+def test_tied_maxima_below_the_target_are_solved() -> None:
+    values = torch.full((1, 78), -1.0)
+    values[0, :2] = 0.0
+    target = entropy_matched_target(values, 0.8)
+    assert not bool(target.unreachable.any())
+    assert float(_entropy(target.log_probabilities)[0]) == pytest.approx(0.8, abs=1e-8)
 
 
 @pytest.mark.parametrize("target", [0.0, -0.1, math.log(78), 5.0])
-def test_unreachable_target_entropy_rejected(target: float) -> None:
+def test_out_of_range_target_entropy_rejected(target: float) -> None:
     with pytest.raises(ValueError, match="target_entropy"):
-        entropy_matched_log_probabilities(torch.zeros(1, 78), target)
+        entropy_matched_target(torch.zeros(1, 78), target)
 
 
 def test_nonfinite_values_rejected() -> None:
     values = torch.zeros(1, 78)
     values[0, 5] = float("nan")
     with pytest.raises(ValueError, match="finite"):
-        entropy_matched_log_probabilities(values, 0.8)
+        entropy_matched_target(values, 0.8)
 
 
 def test_actor_target_ignores_the_scalar_alpha() -> None:
@@ -99,7 +130,7 @@ def test_actor_target_ignores_the_scalar_alpha() -> None:
     learner = _learner(model)
     batch = replace(_batch(BatchKind.DISCRETE), observations=torch.zeros(8, 4))
     prepared = discrete_batch(learner._batch(batch))
-    expected, _ = entropy_matched_log_probabilities(torch.tensor([values] * 8), 0.8)
+    expected = entropy_matched_target(torch.tensor([values] * 8), 0.8).log_probabilities
     logs = model.actor.log_probabilities(prepared.observations).detach()
     expected_loss = float(-(expected.exp() * logs).sum(1).mean())
     for alpha in (0.2, 0.01):
@@ -107,6 +138,8 @@ def test_actor_target_ignores_the_scalar_alpha() -> None:
         assert float(step.loss.detach()) == pytest.approx(expected_loss, rel=1e-6)
         assert float(step.diagnostics["policy/soft_q_entropy"]) == pytest.approx(0.8, abs=1e-6)
         assert float(step.diagnostics["policy/matched_alpha_mean"]) > 0
+        assert float(step.diagnostics["policy/matched_unreachable_fraction"]) == 0
+        assert float(step.diagnostics["policy/matched_entropy_error_max"]) < 1e-8
 
 
 def test_start_like_action_gap_sharpens_only_with_entropy_matched_target() -> None:
@@ -160,6 +193,8 @@ def test_entropy_matched_update_is_finite_without_alpha_optimizer() -> None:
     assert all(math.isfinite(value) for value in metrics.values())
     assert metrics["policy/soft_q_entropy"] == pytest.approx(0.8, abs=1e-6)
     assert metrics["policy/matched_alpha_mean"] > 0
+    assert metrics["policy/matched_unreachable_fraction"] == 0
+    assert metrics["policy/matched_entropy_error_max"] < 1e-8
     assert priorities.transition_ids == list(range(8))
 
 
@@ -211,3 +246,24 @@ def test_checkpoint_pins_entropy_matched_and_backup_options() -> None:
     del legacy["sd_sac_options"]
     with pytest.raises(ValueError, match="legacy checkpoint"):
         backup_only.load_state_dict(legacy)
+
+
+def test_near_tied_maxima_still_reach_the_requested_entropy() -> None:
+    """Review case: a fixed log-temperature bracket stopped at log(3) for these gaps."""
+    values = torch.tensor([[0.0, -1e-7, -2e-7] + [-1.0] * 75], dtype=torch.float64)
+    target = entropy_matched_target(values, 0.8)
+    assert not bool(target.unreachable.any())
+    assert float(_entropy(target.log_probabilities)[0]) == pytest.approx(0.8, abs=1e-8)
+    assert float(target.temperature[0, 0]) == pytest.approx(9.2944095e-8, rel=1e-6)
+
+
+def test_target_entropy_at_log_action_count_rejected_before_any_weight_changes() -> None:
+    """Review case: the critic Adam step ran before the actor solver rejected ln(A)."""
+    learner = _learner(DiscreteSacModel(), target_entropy=math.log(3))
+    before = deepcopy(learner.model.state_dict())
+    with pytest.raises(ValueError, match="target_entropy"):
+        learner.update(_batch(BatchKind.DISCRETE))
+    after = learner.model.state_dict()
+    assert all(torch.equal(after[name], value) for name, value in before.items())
+    assert not learner.critic_optimizer.state
+    assert not learner.actor_optimizer.state
