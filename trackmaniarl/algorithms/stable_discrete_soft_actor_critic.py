@@ -155,6 +155,7 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
         self._configure(config)
 
     def _configure(self, config: SDSACConfig) -> None:
+        self.priority_td_error = config.priority_td_error
         self.learning_rate = config.learning_rate
         self.actor_learning_rate = (
             config.learning_rate
@@ -548,10 +549,24 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
                 self.log_alpha.clamp_(max=math.log(self.entropy_coefficient_max))
         return alpha_loss
 
-    @staticmethod
     def _update_result(
-        batch: SACBatch, update: _DiscreteUpdate
+        self, batch: SACBatch, update: _DiscreteUpdate
     ) -> tuple[Mapping[str, float], PriorityUpdate]:
+        # Absolute residuals must be taken before averaging the twin critics.
+        # Otherwise q1 = target + e, q2 = target - e gives priority zero even
+        # though both regressions are wrong. Keep the old rule only for exact
+        # continuation of checkpoints that explicitly select mean_value.
+        residuals = torch.stack(
+            (
+                update.critic.q1.detach() - update.critic.targets,
+                update.critic.q2.detach() - update.critic.targets,
+            )
+        )
+        mean_absolute = residuals.abs().mean(0)
+        # Preserve the historical arithmetic order for exact legacy resume.
+        mean_value = (
+            0.5 * (update.critic.q1.detach() + update.critic.q2.detach()) - update.critic.targets
+        ).abs()
         metrics = {
             "loss/actor": float(update.actor.loss.item()),
             "loss/critic": float(update.critic.loss.item()),
@@ -579,10 +594,18 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
                 .mean()
                 .item()
             ),
+            "critic/twin_td_mae": float(mean_absolute.mean().item()),
+            "critic/twin_td_rmse": float(residuals.square().mean().sqrt().item()),
+            "critic/priority_cancellation_fraction": float(
+                ((residuals[0] > 0) & (residuals[1] < 0) | (residuals[0] < 0) & (residuals[1] > 0))
+                .float()
+                .mean()
+                .item()
+            ),
             **{key: float(value.item()) for key, value in update.actor.diagnostics.items()},
             **{key: float(value.item()) for key, value in update.critic.diagnostics.items()},
         }
-        td_errors = (0.5 * (update.critic.q1 + update.critic.q2) - update.critic.targets).abs()
+        td_errors = mean_absolute if self.priority_td_error == "mean_absolute" else mean_value
         return metrics, PriorityUpdate(
             batch.source.transition_ids, td_errors.detach().cpu().tolist()
         )
@@ -641,7 +664,10 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             "entropy_penalty_coefficient": self.entropy_penalty_coefficient,
             "entropy_penalty_reference": self.entropy_penalty_reference,
         }
-        # Preserve the canonical checkpoint contract at the default.
+        # Missing priority metadata means the historical mean-value residual.
+        # Exact resume of that rule requires an explicit mean_value selection.
+        if self.priority_td_error != "mean_value":
+            options["priority_td_error"] = self.priority_td_error
         if self.terminal_value_loss_coefficient:
             options["terminal_value_loss_coefficient"] = self.terminal_value_loss_coefficient
         if self.actor_temperature != "learned":
@@ -665,7 +691,8 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             if saved != self._checkpoint_options():
                 raise ValueError("checkpoint SD-SAC options do not match the learner")
         elif (
-            self.actor_objective != "sac"
+            self.priority_td_error != "mean_value"
+            or self.actor_objective != "sac"
             or self.terminal_value_loss_coefficient != 0
             or self.entropy_learning_rate != self.learning_rate
             or self.entropy_coefficient_min is not None

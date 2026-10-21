@@ -95,6 +95,7 @@ class TQCConfig(SACConfig):
 
 
 class SDSACOptions(SACOptions, total=False):
+    priority_td_error: Literal["mean_absolute", "mean_value"]
     actor_learning_rate: float | None
     entropy_learning_rate: float | None
     entropy_coefficient_min: float | None
@@ -110,6 +111,7 @@ class SDSACOptions(SACOptions, total=False):
 
 @dataclass(frozen=True, slots=True)
 class SDSACConfig(SACConfig):
+    priority_td_error: Literal["mean_absolute", "mean_value"] = "mean_absolute"
     actor_learning_rate: float | None = None
     entropy_learning_rate: float | None = None
     entropy_coefficient_min: float | None = None
@@ -124,6 +126,8 @@ class SDSACConfig(SACConfig):
 
     def validate(self) -> None:
         SACConfig.validate(self)
+        if self.priority_td_error not in {"mean_absolute", "mean_value"}:
+            raise ValueError("SD-SAC priority_td_error must be 'mean_absolute' or 'mean_value'")
         positive = {
             "learning_rate": self.learning_rate,
             "target_tau": self.target_tau,

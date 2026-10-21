@@ -309,6 +309,7 @@ custom batch producer for `policy_anchor_q_values`.
 | REDQ: `policy_update_interval` | `20` | Positive critic updates between actor updates. |
 | TQC: `top_quantiles_to_drop_per_critic` | `2` | Non-negative global upper-quantile truncation per critic, cannot remove every target quantile. |
 | SD-SAC: `q_clip_epsilon` | `0.5` | Finite positive critic-target clipping width. Zero freezes the clipped target branch; it does not disable clipping and is rejected. |
+| SD-SAC: `priority_td_error` | `mean_absolute` | Replay priority is the mean of the absolute residuals of the two critics, so opposite errors cannot cancel. Historical checkpoints require explicit `mean_value` for exact continuation of their old absolute mean-Q residual. The rule is checkpoint-bound; switching is rejected before loading weights. Uniform sampling ignores this priority feedback. |
 | SD-SAC: `entropy_penalty_coefficient` | `0.5` | Non-negative entropy-change penalty weight. |
 | SD-SAC: `actor_learning_rate` | null | Actor optimizer rate; null inherits `learning_rate`. Preserved in evaluated-policy checkpoints. |
 | SD-SAC: `entropy_learning_rate` | null | Independent log-alpha optimizer rate; null inherits `learning_rate`. |

@@ -579,6 +579,22 @@ Trackmania baseline with the full 78-action environment table.
 Successful synthetic tests do not establish driving quality or readiness for
 long training. Treat this learner as a research option.
 
+Prioritized replay uses `priority_td_error: mean_absolute`: for target `y`, the
+priority is `(|Q1-y| + |Q2-y|)/2`. The old `|mean(Q1,Q2)-y|` could assign zero
+priority when both critics were wrong in opposite directions. Historical
+checkpoints require explicit `priority_td_error: mean_value` to retain their
+original sampling trajectory; the loader rejects silent switches. This change
+does not affect uniform sampling. `critic/twin_td_mae`, `critic/twin_td_rmse` and
+`critic/priority_cancellation_fraction` expose residuals hidden by a mean critic.
+Existing `critic/td_rmse` remains the mean-value residual for continuity.
+
+`critic/centered_action_disagreement` removes each critic's shared action-value
+baseline before comparing action preferences. `critic/mean_greedy_twin_agreement`
+reports how often both critics select the mean critic's best action. High actor
+agreement with the mean critic alone does not establish correct action values.
+See [the October 21 follow-up](../docs/reviews/2026-10-21-sd-sac-followup.md) for
+the held-episode diagnostic and its limitations.
+
 **Contract.** The custom model exposes `actor`, `q1` and `q2`. The actor must
 provide `probabilities(observation)` and categorical sampling, while each critic
 returns `[batch, action_count]`. The policy returns the sampled/argmax index

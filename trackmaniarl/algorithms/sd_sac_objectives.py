@@ -90,6 +90,8 @@ def entropy_matched_target(
     for _ in range(_BRACKET_EXPANSIONS):
         widen = ~unreachable & (_entropy(_target_logs(gaps, low)) > target_entropy)
         grow = ~unreachable & (_entropy(_target_logs(gaps, high)) < target_entropy)
+        if not bool(widen.any() | grow.any()):
+            break
         low = torch.where(widen, low - _BRACKET_STEP, low)
         high = torch.where(grow, high + _BRACKET_STEP, high)
     # Entropy grows monotonically with temperature: bisect log(alpha) per row.
@@ -186,4 +188,17 @@ def actor_diagnostics(
         "critic/greedy_value_margin": (top_values[:, 0] - top_values[:, 1]).mean(),
         "critic/q_greedy_agreement": (q1.argmax(1) == q2.argmax(1)).float().mean(),
         "critic/all_action_disagreement": (q1 - q2).abs().mean(),
+        # Remove each critic's shared value baseline before comparing action
+        # rankings. A constant offset is not uncertainty about which action wins.
+        "critic/centered_action_disagreement": (
+            (q1.double() - q1.double().mean(1, keepdim=True))
+            - (q2.double() - q2.double().mean(1, keepdim=True))
+        )
+        .abs()
+        .mean(),
+        "critic/mean_greedy_twin_agreement": (
+            (q1.argmax(1) == critic_actions) & (q2.argmax(1) == critic_actions)
+        )
+        .float()
+        .mean(),
     }
