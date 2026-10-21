@@ -13,6 +13,14 @@
 - Add twin residual and centered action-disagreement diagnostics. Avoid redundant
   temperature-bracket searches once every row brackets the requested entropy.
 
+## 1.2.15 - 2026-10-21
+
+- Hold throttle during Trackmania's countdown instead of waiting for a positive
+  race clock and the first policy inference. The first policy action takes over
+  normally. Reset failures and recovery confirmations release controls. Record
+  the start setting/time in reset metadata; `countdown_throttle: false` retains
+  the historical neutral start for reproducibility.
+
 ## 1.2.14 - 2026-10-21
 
 - Compute resumed throughput from segment deltas, including partial first metric windows, while preserving global training counters.
