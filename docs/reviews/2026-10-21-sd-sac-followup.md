@@ -85,3 +85,11 @@ opposing-error priorities, explicit legacy/current checkpoint contracts, centere
 rank disagreement and joint entropy-matched actor/critic learning with exact
 next-update resume on a delayed-goal MDP. Synthetic success does not qualify
 Trackmania driving.
+
+Validation on Windows with Python 3.12 and CPU Torch 2.11.0: 211 SD-SAC tests
+passed, including the joint-learning/resume case; the full repository suite
+passed 1,261 tests with five skips in 295 seconds. Ruff formatting and lint passed;
+strict mypy passed all 273 source files. An initial wider learning-test attempt
+hit Windows permissions on the shared system pytest temporary folder; using a
+fresh task-owned base directory resolved the fixture setup errors. Original
+failed logs are retained. These are local checks; remote CI is a separate gate.
