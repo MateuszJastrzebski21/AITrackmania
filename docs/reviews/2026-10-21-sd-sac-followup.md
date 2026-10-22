@@ -93,3 +93,32 @@ strict mypy passed all 273 source files. An initial wider learning-test attempt
 hit Windows permissions on the shared system pytest temporary folder; using a
 fresh task-owned base directory resolved the fixture setup errors. Original
 failed logs are retained. These are local checks; remote CI is a separate gate.
+
+## Fresh pilot and early-stop accounting, 21–22 October
+
+A fresh seed-17 pilot jointly trained the actor and critics with uniform replay,
+target entropy 0.8, backup entropy coefficient 0.01 and countdown throttle enabled.
+The operator stopped it early after approximately three hours. It collected
+184,316 of 262,144 planned transitions, performed 43,060 updates and recorded
+111 finishes in 202 training episodes. Its best training lap was 50.78 seconds;
+the median among training finishes was 58.76 seconds. Nineteen of the last
+twenty training episodes finished. These are exploratory training trajectories,
+not independent greedy evaluation or a comparison with QR-DQN.
+
+The saved checkpoint retained 519 earned updates. The accounting conservation
+check passed (43,060 performed + 519 pending = 43,579 earned), but the final
+drained-credit gate correctly blocked automatic benchmark qualification.
+The local launcher's shared immediate-stop signal caused the undrained save;
+the separate graceful-shutdown fix in PR #60 stops the actor first and then
+drains accepted learner work. The original checkpoint and its pending credit
+are preserved; no retrospective optimization or counter edits are permitted.
+
+Checkpoint SHA256:
+`f4fb037933d845ef4149fc7cdeccf6387e26a711c72c9392ab2c1e877898df0d`.
+Its original run fingerprint and finite learner tensors passed verification.
+All 285 frozen source/configuration hashes remained unchanged, all observed
+owned processes closed, and the controller mutex was free after shutdown.
+An optional subsequent assessment must use this exact saved policy without
+training and be labelled as an early-stopped pilot assessment, not a completed
+budget benchmark. SD-SAC remains experimental and excluded from the standard
+multi-seed campaign; this pilot does not establish competitive driving quality.
